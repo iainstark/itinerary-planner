@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trip Planner</title>
+
+  <!--
+    Google Fonts — loaded from an external CDN.
+    Playfair Display: a characterful serif for the title. Feels Scottish,
+    editorial, unhurried — suits a travel tool.
+    Inter: clean, highly readable sans-serif for body text and UI.
+  -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!--
+    marked.js — a Markdown-to-HTML converter loaded from a CDN.
+    The itinerary comes back from the API as Markdown (headers, bold, lists).
+    marked.js converts that to HTML so it renders properly in the browser
+    rather than displaying raw asterisks and hashes.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <style>
+    /* ── Design tokens ──────────────────────────────────────────────────────
+       All colours and fonts defined once here as CSS variables.
+       Changing --accent here changes it everywhere on the page.
+    ── */
+    :root {
+      --bg:         #0f1317;   /* Near-black background — slate, not pure black */
+      --surface:    #1a2028;   /* Slightly lighter surface for cards/inputs */
+      --border:     #2a3540;   /* Subtle borders */
+      --text:       #e8eaed;   /* Primary text — off-white, easier on the eye */
+      --text-muted: #7a8a96;   /* Secondary text — labels, hints */
+      --accent:     #c9832a;   /* Warm amber — the one bold colour on the page */
+      --accent-dim: #8a5a1e;   /* Darker amber for hover states */
+      --success:    #4a9e6a;   /* Muted green for confirmed items */
+      --warn:       #c9832a;   /* Amber reused for check-before-visiting items */
+      --font-display: 'Playfair Display', Georgia, serif;
+      --font-body:    'Inter', system-ui, sans-serif;
+    }
+
+    /* ── Reset and base ──────────────────────────────────────────────────── */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-body);
+      font-size: 16px;
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ── Layout ──────────────────────────────────────────────────────────── */
+    .container {
+      max-width: 760px;       /* Comfortable reading width */
+      margin: 0 auto;
+      padding: 48px 24px 80px;
+    }
+
+    /* ── Header ──────────────────────────────────────────────────────────── */
+    header {
+      margin-bottom: 40px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 32px;
+    }
+
+    /* The amber rule above the title is the signature element —
+       a single horizontal line that anchors the header without decoration. */
+    header::before {
+      content: '';
+      display: block;
+      width: 48px;
+      height: 3px;
+      background: var(--accent);
+      margin-bottom: 20px;
+    }
+
+    h1 {
+      font-family: var(--font-display);
+      font-size: 2.2rem;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.2;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 0.95rem;
+    }
+
+    /* ── Form ────────────────────────────────────────────────────────────── */
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 8px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 160px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      font-family: var(--font-body);
+      font-size: 0.95rem;
+      line-height: 1.6;
+      padding: 14px 16px;
+      resize: vertical;           /* Allow vertical resize, not horizontal */
+      transition: border-color 0.2s;
+    }
+
+    /* Highlight the textarea border when the user clicks into it */
+    textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    textarea::placeholder {
+      color: var(--text-muted);
+      opacity: 0.7;
+    }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-family: var(--font-body);
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 12px 28px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover:not(:disabled) {
+      background: var(--accent-dim);
+    }
+
+    /* Disabled state while the chain is running — prevents double-submission */
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* ── Step tracker ────────────────────────────────────────────────────────
+       This is the signature element — shows the four steps of the chain
+       advancing in real time during processing.
+
+       Each step has three states:
+         .waiting  — not started yet (muted, thin border)
+         .active   — currently running (amber, pulsing dot)
+         .done     — complete (green check)
+
+       Because the chain runs server-side and we don't have a live connection
+       to the server's console, we simulate the steps advancing on a timer.
+       The timing is approximate but realistic based on observed run times.
+    ── */
+    .steps {
+      display: none;             /* Hidden until a request is in progress */
+      margin: 28px 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .steps.visible {
+      display: block;
+    }
+
+    .step {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--border);
+      transition: background 0.3s;
+    }
+
+    .step:last-child {
+      border-bottom: none;
+    }
+
+    /* The dot/icon on the left of each step */
+    .step-icon {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      transition: all 0.3s;
+    }
+
+    .step.active {
+      background: rgba(201, 131, 42, 0.06);  /* Very faint amber tint */
+    }
+
+    .step.active .step-icon {
+      border-color: var(--accent);
+      /* Pulse animation — draws attention to the currently running step */
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+
+    .step.done .step-icon {
+      background: var(--success);
+      border-color: var(--success);
+      color: #fff;
+    }
+
+    .step-label {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    .step.active .step-label {
+      color: var(--text);
+    }
+
+    .step.done .step-label {
+      color: var(--text-muted);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.6; transform: scale(0.88); }
+    }
+
+    /* ── Error state ─────────────────────────────────────────────────────── */
+    .error {
+      display: none;
+      background: rgba(180, 60, 60, 0.12);
+      border: 1px solid rgba(180, 60, 60, 0.4);
+      border-radius: 6px;
+      padding: 14px 16px;
+      color: #e07070;
+      font-size: 0.9rem;
+      margin: 20px 0;
+    }
+
+    .error.visible {
+      display: block;
+    }
+
+    /* ── Output ──────────────────────────────────────────────────────────── */
+    .output {
+      display: none;
+      margin-top: 32px;
+    }
+
+    .output.visible {
+      display: block;
+    }
+
+    .output-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .output-title {
+      font-family: var(--font-display);
+      font-size: 1.3rem;
+      color: var(--text);
+    }
+
+    /* Copy button — lets users copy the raw Markdown for use elsewhere */
+    .copy-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      padding: 6px 14px;
+    }
+
+    .copy-btn:hover:not(:disabled) {
+      background: var(--surface);
+      color: var(--text);
+      border-color: var(--text-muted);
+    }
+
+    /* ── Rendered Markdown styles ────────────────────────────────────────────
+       The itinerary arrives as Markdown. marked.js converts it to HTML.
+       These styles make that HTML look good in the dark theme.
+    ── */
+    .itinerary-body {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 28px 32px;
+    }
+
+    .itinerary-body h1,
+    .itinerary-body h2 {
+      font-family: var(--font-display);
+      color: var(--text);
+      margin: 28px 0 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .itinerary-body h1 { font-size: 1.4rem; }
+    .itinerary-body h2 { font-size: 1.15rem; }
+
+    .itinerary-body h3 {
+      color: var(--accent);
+      font-size: 1rem;
+      font-weight: 600;
+      margin: 20px 0 8px;
+    }
+
+    .itinerary-body p {
+      margin-bottom: 10px;
+      color: var(--text);
+    }
+
+    .itinerary-body ul,
+    .itinerary-body ol {
+      padding-left: 20px;
+      margin-bottom: 12px;
+    }
+
+    .itinerary-body li {
+      margin-bottom: 6px;
+    }
+
+    /* Highlight CONFIRMED and CHECK BEFORE VISITING markers */
+    .itinerary-body strong {
+      color: var(--text);
+    }
+
+    /* Inline code used for status markers */
+    .itinerary-body code {
+      background: rgba(201, 131, 42, 0.15);
+      color: var(--accent);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 0.85em;
+    }
+
+    /* Horizontal rules between sections */
+    .itinerary-body hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 24px 0;
+    }
+
+    /* ── Responsive ──────────────────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      h1 { font-size: 1.7rem; }
+      .itinerary-body { padding: 20px 18px; }
+      .container { padding: 32px 16px 60px; }
+    }
+
+    /* ── Accessibility ───────────────────────────────────────────────────── */
+    /* Visible focus ring for keyboard users */
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* Respect user preference for reduced motion */
+    @media (prefers-reduced-motion: reduce) {
+      .step.active .step-icon { animation: none; }
+      * { transition: none !important; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <!-- ── Header ─────────────────────────────────────────────────────────── -->
+    <header>
+      <h1>Trip Planner</h1>
+      <p class="subtitle">Describe your trip. Get a verified, day-by-day itinerary.</p>
+    </header>
+
+    <!-- ── Input form ─────────────────────────────────────────────────────── -->
+    <div class="form-group">
+      <label for="brief">Trip brief</label>
+      <!--
+        The textarea where the user types their trip brief.
+        id="brief" links it to the label above (accessibility).
+        We read its value in JavaScript with document.getElementById('brief').value
+      -->
+      <textarea
+        id="brief"
+        placeholder="e.g. 5 nights in Ballater, 10–14 August 2026. Travelling with my mum (75). Interested in walking, distilleries, and local history. Based at a self-catering cottage. No fixed car hire — need to factor in driving distances."
+      ></textarea>
+    </div>
+
+    <!--
+      The submit button.
+      onclick="planTrip()" calls the JavaScript function below when clicked.
+      id="submitBtn" lets us disable it during processing.
+    -->
+    <button id="submitBtn" onclick="planTrip()">Plan my trip</button>
+
+    <!-- ── Step tracker (hidden until a request starts) ───────────────────── -->
+    <!--
+      Four steps matching the four functions in planner.py.
+      JavaScript advances these as the request progresses.
+      Each .step starts with no active/done class — JavaScript adds them.
+    -->
+    <div class="steps" id="steps">
+      <div class="step" id="step-0">
+        <div class="step-icon" id="icon-0"></div>
+        <span class="step-label">Discovering local events</span>
+      </div>
+      <div class="step" id="step-1">
+        <div class="step-icon" id="icon-1"></div>
+        <span class="step-label">Generating draft itinerary</span>
+      </div>
+      <div class="step" id="step-2">
+        <div class="step-icon" id="icon-2"></div>
+        <span class="step-label">Verifying venues and dates</span>
+      </div>
+      <div class="step" id="step-3">
+        <div class="step-icon" id="icon-3"></div>
+        <span class="step-label">Formatting your itinerary</span>
+      </div>
+    </div>
+
+    <!-- ── Error display (hidden until an error occurs) ───────────────────── -->
+    <div class="error" id="error"></div>
+
+    <!-- ── Output (hidden until itinerary is ready) ───────────────────────── -->
+    <div class="output" id="output">
+      <div class="output-header">
+        <span class="output-title">Your itinerary</span>
+        <button class="copy-btn" onclick="copyItinerary()">Copy as text</button>
+      </div>
+      <!--
+        The rendered itinerary goes here.
+        innerHTML is set by JavaScript after the API responds.
+      -->
+      <div class="itinerary-body" id="itinerary"></div>
+    </div>
+
+  </div>
+
+  <script>
+    /*
+      All the JavaScript that makes the page interactive.
+
+      Three things happen here:
+        1. planTrip()      — sends the brief to the server, handles the response
+        2. animateSteps()  — advances the step tracker on a timer while waiting
+        3. copyItinerary() — copies the raw Markdown to the clipboard
+    */
+
+    // Store the raw Markdown from the API response so copyItinerary() can use it.
+    // Declared outside planTrip() so it persists between function calls.
+    let rawMarkdown = '';
+
+    // Track the step animation interval so we can cancel it when done.
+    let stepInterval = null;
+
+    // ── Step animation ──────────────────────────────────────────────────────
+
+    /*
+      animateSteps() simulates the four-step chain advancing in real time.
+
+      Because the chain runs server-side we don't get live progress events —
+      the server just processes and eventually responds. So we estimate timing:
+        Step 0: ~15 seconds (web searches for events)
+        Step 1: ~10 seconds (draft generation)
+        Step 2: ~20 seconds (verification web searches)
+        Step 3: ~8 seconds  (formatting)
+
+      The animation is approximate but gives the user meaningful feedback
+      instead of a static spinner. Much better UX for a 30–60 second wait.
+    */
+    function animateSteps() {
+      // Step timings in milliseconds — cumulative from request start
+      const stepTimes = [0, 15000, 25000, 45000];
+      let currentStep = 0;
+
+      // Immediately mark step 0 as active
+      setStepActive(0);
+
+      // Every 1 second, check if it's time to advance to the next step
+      stepInterval = setInterval(() => {
+        const elapsed = Date.now() - requestStartTime;
+
+        for (let i = currentStep + 1; i < stepTimes.length; i++) {
+          if (elapsed >= stepTimes[i]) {
+            // Mark the previous step as done, new step as active
+            setStepDone(i - 1);
+            setStepActive(i);
+            currentStep = i;
+          }
+        }
+      }, 1000);
+    }
+
+    // Mark all four steps as done when the response arrives
+    function finishSteps() {
+      clearInterval(stepInterval);
+      for (let i = 0; i < 4; i++) {
+        setStepDone(i);
+      }
+    }
+
+    // Reset all steps to their default (waiting) state
+    function resetSteps() {
+      clearInterval(stepInterval);
+      for (let i = 0; i < 4; i++) {
+        const stepEl = document.getElementById(`step-${i}`);
+        const iconEl = document.getElementById(`icon-${i}`);
+        stepEl.classList.remove('active', 'done');
+        iconEl.textContent = '';
+      }
+    }
+
+    function setStepActive(i) {
+      const stepEl = document.getElementById(`step-${i}`);
+      const iconEl = document.getElementById(`icon-${i}`);
+      stepEl.classList.add('active');
+      stepEl.classList.remove('done');
+      iconEl.textContent = '';
+    }
+
+    function setStepDone(i) {
+      const stepEl = document.getElementById(`step-${i}`);
+      const iconEl = document.getElementById(`icon-${i}`);
+      stepEl.classList.remove('active');
+      stepEl.classList.add('done');
+      iconEl.textContent = '✓';   // Checkmark inside the dot
+    }
+
+    // ── Main request function ───────────────────────────────────────────────
+
+    let requestStartTime = 0;
+
+    async function planTrip() {
+      // Read the trip brief from the textarea
+      const brief = document.getElementById('brief').value.trim();
+
+      // Basic client-side validation — don't send an empty request
+      if (!brief) {
+        showError('Please enter a trip brief before planning.');
+        return;
+      }
+
+      // ── Set up the loading state ──
+      // Disable the button so the user can't submit twice
+      document.getElementById('submitBtn').disabled = true;
+      document.getElementById('submitBtn').textContent = 'Planning…';
+
+      // Hide any previous output or error
+      document.getElementById('output').classList.remove('visible');
+      document.getElementById('error').classList.remove('visible');
+
+      // Show the step tracker and start the animation
+      document.getElementById('steps').classList.add('visible');
+      resetSteps();
+      requestStartTime = Date.now();
+      animateSteps();
+
+      try {
+        /*
+          fetch() sends an HTTP POST request to /plan on our FastAPI server.
+          This is the equivalent of typing in the terminal and pressing Enter —
+          except the brief travels over HTTP instead of stdin.
+
+          The request body is JSON: { "brief": "..." }
+          This matches the PlanRequest model defined in main.py.
+
+          fetch() is asynchronous — "await" pauses here until the server responds.
+          The rest of the page stays interactive while waiting.
+        */
+        const response = await fetch('/plan', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'  // Tell the server we're sending JSON
+          },
+          body: JSON.stringify({ brief: brief }) // Serialize the brief as JSON
+        });
+
+        // Parse the JSON response body.
+        // This gives us an object matching PlanResponse: { final: "...", events: "..." }
+        const data = await response.json();
+
+        if (!response.ok) {
+          // HTTP error (4xx or 5xx) — the server returned an error response
+          // FastAPI puts the error message in data.detail
+          throw new Error(data.detail || `Server error: ${response.status}`);
+        }
+
+        // ── Success ──
+        finishSteps();
+
+        // Store the raw Markdown for the copy button
+        rawMarkdown = data.final;
+
+        /*
+          marked.parse() converts the Markdown itinerary to HTML.
+          We set it as innerHTML of the output div so it renders properly —
+          headers, bold text, bullet lists all formatted correctly.
+        */
+        document.getElementById('itinerary').innerHTML = marked.parse(data.final);
+        document.getElementById('output').classList.add('visible');
+
+        // Scroll the output into view smoothly
+        document.getElementById('output').scrollIntoView({ behavior: 'smooth' });
+
+      } catch (err) {
+        // Something went wrong — network error, server error, etc.
+        finishSteps();
+        showError(`Something went wrong: ${err.message}. Please try again.`);
+      } finally {
+        // Always re-enable the button, whether the request succeeded or failed
+        document.getElementById('submitBtn').disabled = false;
+        document.getElementById('submitBtn').textContent = 'Plan my trip';
+      }
+    }
+
+    // ── Error display ───────────────────────────────────────────────────────
+
+    function showError(message) {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = message;
+      errorEl.classList.add('visible');
+    }
+
+    // ── Copy to clipboard ───────────────────────────────────────────────────
+
+    async function copyItinerary() {
+      if (!rawMarkdown) return;
+
+      try {
+        // navigator.clipboard is the modern way to write to the clipboard
+        await navigator.clipboard.writeText(rawMarkdown);
+
+        // Brief visual confirmation — change the button text for 2 seconds
+        const btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied';
+        setTimeout(() => { btn.textContent = 'Copy as text'; }, 2000);
+      } catch (err) {
+        // Clipboard access can be blocked by browser permissions
+        showError('Could not copy to clipboard. Try selecting and copying manually.');
+      }
+    }
+  </script>
+
+</body>
+</html>
