@@ -199,6 +199,10 @@ Critical checks:
 - Cafes/restaurants - check current trading status
 - Any item marked [CHECK] in the draft
 - Every event in the draft - confirm year and dates explicitly
+- Every named venue, restaurant, museum, pub, or attraction - confirm it is currently
+  trading. Search "[venue name] [city] closed" and "[venue name] [city] 2026".
+  If there is any evidence the venue has closed, relocated, or permanently changed,
+  mark CHECK_FAIL and REMOVE - do not include a closed venue as a recommendation
 
 Output format:
 1. EXCLUSIONS LIST: items removed and why
@@ -323,3 +327,4 @@ def run_chain(trip_brief: str) -> dict:
         "final": final,
         "events": events,
     }
+
