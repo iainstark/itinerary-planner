@@ -2,13 +2,6 @@
 planner.py
 ==========
 The four-step itinerary planning chain.
-
-This module contains only the planning logic - it knows nothing about
-web requests or how it is being called. That separation means this file
-can be imported by a FastAPI server, a CLI script, a bot, or anything else
-without changing a line.
-
-Imported by: app/main.py
 """
 
 import anthropic
@@ -44,11 +37,24 @@ Search strategy:
 - Search "[county/region] events [month] [year]" for nearby events
 - Check visitscotland.com and local council event listings if possible
 
-Output format - return a structured list:
-EVENT FOUND: [name] | [date] | [location] | [brief description] | [source]
-NO EVENTS FOUND: [what you searched for]
+CRITICAL YEAR RULE - apply this before including any event:
+- You must confirm the event is running in the exact year of the travel dates
+- Search specifically for "[event name] [year]" to confirm the current year edition
+- If you cannot find confirmation that the event is running in the correct year, do NOT include it
+- A result from a previous year is not confirmation - festivals cancel, change dates, or fold
+- If in doubt, exclude - a missing event is better than a wrong one
 
-Be thorough - this step exists specifically to catch events the user may not know about."""
+DATE FILTERING - apply this before including any event:
+- Check the event dates against the supplied travel dates
+- If the event falls outside the travel window, do NOT include it
+- Do not include events that have already passed or not yet been confirmed for the correct dates
+
+Output format - return a structured list:
+EVENT FOUND: [name] | [confirmed date] | [location] | [brief description] | [source confirming year]
+NO EVENTS FOUND: [what you searched for]
+EXCLUDED: [name] | [reason: wrong year / outside travel dates / unconfirmed]
+
+Be thorough - but accurate. A short confirmed list is better than a long unverified one."""
 
 
 def discover_events(client, trip_brief):
@@ -114,8 +120,8 @@ def discover_events(client, trip_brief):
         return "Event discovery failed - proceed without event data."
 
 
-GENERATE_SYSTEM = """You are an experienced Scottish travel planner with deep knowledge of
-attractions, cafes, gardens, distilleries, walks, and seasonal access across Scotland.
+GENERATE_SYSTEM = """You are an experienced travel planner with deep knowledge of
+attractions, cafes, gardens, distilleries, walks, and seasonal access.
 
 Produce a detailed day-by-day draft itinerary from the trip brief and discovered events.
 
@@ -124,8 +130,10 @@ Rules:
 - For each item note: name, type, why it suits the group
 - Flag anything with seasonal restrictions or limited opening hours with [CHECK]
 - Keep pace realistic
-- IMPORTANT: Any events found in the events discovery section must be included in the
-  itinerary on their correct date - these are real confirmed events happening during the trip
+- Where the brief is vague about preferences (e.g. interest in music, food, art),
+  offer a range across 2-3 specific styles or options rather than defaulting to one
+- IMPORTANT: Only include events from the events discovery section that are explicitly
+  marked EVENT FOUND - do not include anything marked EXCLUDED
 
 Driving radius:
 - Primary activities within 30 minutes of base
@@ -175,7 +183,14 @@ For EVERY named venue, attraction, walk, cafe, or activity:
 2. Check specifically against the travel dates provided
 3. Mark each item:
    CHECK_PASS: [venue] - confirmed open/accessible on [dates]
-   CHECK_FAIL: [venue] - [reason: closed / restricted / unverified]
+   CHECK_FAIL: [venue] - [reason: closed / outside travel dates / unverified]
+
+CRITICAL REMOVAL RULES - these are not suggestions:
+- Any event whose confirmed dates fall outside the travel window: CHECK_FAIL, mark REMOVE
+- Any event that cannot be confirmed as running in the correct year: CHECK_FAIL, mark REMOVE
+- Any venue confirmed closed during the travel dates: CHECK_FAIL, mark REMOVE
+- CHECK_FAIL items marked REMOVE must not appear in the day-by-day itinerary
+- They go to the exclusions list only - not flagged inline, not softened, removed entirely
 
 Critical checks:
 - Royal estates (Balmoral etc) - check royal residence calendar
@@ -183,8 +198,12 @@ Critical checks:
 - Distilleries - check tour booking requirements and opening days
 - Cafes/restaurants - check current trading status
 - Any item marked [CHECK] in the draft
+- Every event in the draft - confirm year and dates explicitly
 
-Output: verification summary first, then full itinerary with status markers inline"""
+Output format:
+1. EXCLUSIONS LIST: items removed and why
+2. VERIFICATION SUMMARY: pass/fail count
+3. CLEAN ITINERARY: day-by-day with only CHECK_PASS and genuinely uncertain items"""
 
 
 def verify_itinerary(client, draft, trip_brief):
@@ -257,7 +276,15 @@ Format rules:
 - CHECK BEFORE VISITING items include a one-line note on what to confirm
 - Events discovered from Step 0 should be clearly highlighted as KEY EVENT
 - End with a Before You Go checklist of all items needing manual confirmation
-- Friendly, practical tone"""
+- Friendly, practical tone
+
+CRITICAL EXCLUSION RULE:
+- Any item marked CHECK_FAIL or REMOVE in the verified content must not appear in the
+  day-by-day itinerary under any circumstances
+- Do not soften this by flagging them inline - they are excluded entirely
+- If an event was removed because it falls outside the travel dates, note it once at
+  the bottom: EXCLUDED: [name] - outside travel dates
+- A clean itinerary with fewer items is better than a cluttered one with wrong items"""
 
 
 def format_output(client, verified, trip_brief):
